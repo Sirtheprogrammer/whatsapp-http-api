@@ -1,0 +1,13 @@
+{
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc.4",
+    "body-parser": "^2.2.0",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "fs-extra": "^11.3.2",
+    "jsonwebtoken": "^9.0.2",
+    "qrcode": "^1.5.4",
+    "uuid": "^13.0.0"
+  }
+}
