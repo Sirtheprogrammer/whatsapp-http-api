@@ -1,4 +1,16 @@
 {
+  "name": "whatsapp-http-api",
+  "version": "1.0.0",
+  "description": "Simple WhatsApp HTTP API using Baileys",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["whatsapp", "api", "baileys", "http"],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc.4",
     "body-parser": "^2.2.0",
@@ -9,5 +21,8 @@
     "jsonwebtoken": "^9.0.2",
     "qrcode": "^1.5.4",
     "uuid": "^13.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
