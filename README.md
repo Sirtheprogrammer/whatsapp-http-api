@@ -23,8 +23,7 @@ npm install
 2. (Optional) Set your Postgres DATABASE_URL. By default the app uses:
 
 ```
-postgresql://sirtheprogrammer:91JDib75NISrkKNZ4Aakhyyzz7aBPh77@dpg-d3ge05p5pdvs73ee0040-a.oregon-postgres.render.com/whatssession
-```
+postgresql://sirtheprogrammer.....................................................................
 
 To use your own database, export the URL before starting the server:
 
