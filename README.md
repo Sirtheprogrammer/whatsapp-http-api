@@ -139,34 +139,3 @@ GET /health
 
 Returns server health and a timestamp.
 
-### Notes on pairing and connection
-
-- When you request a pairing code, Baileys will return a code which must be entered in the WhatsApp mobile app (Linked devices / Companion setup). A successful pairing will persist credentials in the session's folder and the DB.
-- If a session is logged out, the app deletes the DB row and folder; create a new session to re-pair.
-
-## Data persistence and database
-
-- The app stores every file inside the `./auth_sessions/<sessionId>/` folder into a JSON object which is saved as `auth_json` in the `sessions` table (JSONB column).
-- On session start the DB contents are restored back to the folder so Baileys can read them.
-- The `db.js` module creates the `sessions` table automatically on startup.
-
-## Security
-
-- Never commit auth files or DB credentials to version control.
-- Use HTTPS and restrict access to the API in production.
-- Rotate DB credentials periodically.
-
-## Troubleshooting
-
-- If `pair-request` returns `Cannot read properties of undefined (reading 'public')` it means Baileys couldn't find a proper creds state. Try deleting the session and creating a new one, or ensure network connectivity.
-- Inspect server logs for messages prefixed with `[<sessionId>]` to follow connection updates for each session.
-
-## Next improvements (suggested)
-
-- Add a `GET /sessions/:id/status` endpoint returning connection state and presence of auth files.
-- Add webhooks for inbound messages instead of relying on logs.
-- Support encrypted storage for auth data.
-
----
-
-If you want, I can add the `GET /sessions/:id/status` endpoint now and run the smoke tests (create session, pair-request) to confirm everything works end-to-end. Provide permission and I'll execute the sequence against your running server and paste responses.
