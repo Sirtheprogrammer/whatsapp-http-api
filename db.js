@@ -16,10 +16,17 @@ async function init() {
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
         auth_json JSONB,
+        last_status JSONB,
         created_at TIMESTAMPTZ DEFAULT now(),
         updated_at TIMESTAMPTZ DEFAULT now()
       );
     `);
+    // Ensure column exists for older DBs
+    try {
+      await client.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_status JSONB`);
+    } catch (e) {
+      // ignore
+    }
   } finally {
     client.release();
   }
@@ -34,6 +41,30 @@ async function saveSession(id, authJson) {
       [id, authJson]
     );
     return res.rowCount;
+  } finally {
+    client.release();
+  }
+}
+
+async function saveLastStatus(id, lastStatus) {
+  const client = await pool.connect();
+  try {
+    await client.query(
+      `INSERT INTO sessions (id, last_status, updated_at)
+       VALUES ($1, $2, now())
+       ON CONFLICT (id) DO UPDATE SET last_status = $2, updated_at = now()`,
+      [id, lastStatus]
+    );
+  } finally {
+    client.release();
+  }
+}
+
+async function loadLastStatus(id) {
+  const client = await pool.connect();
+  try {
+    const res = await client.query('SELECT last_status FROM sessions WHERE id = $1', [id]);
+    return res.rows[0]?.last_status || null;
   } finally {
     client.release();
   }
