@@ -15,7 +15,7 @@ Supports multiple concurrent sessions, persistent authentication in PostgreSQL, 
 
 <p align="left">
   <img src="https://skillicons.dev/icons?i=nodejs,express,postgres,js,bash,linux,git" />
-  <img src="https://baileys.wiki/img/WhiskeySockets-colorful.png" alt="Baileys"/>
+  <img src="https://baileys.wiki/img/WhiskeySockets-colorful.png" alt="Baileys" height="50" width="50"/>
 </p>
 
 ---
