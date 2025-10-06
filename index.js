@@ -17,6 +17,9 @@ class SessionManager {
     this.sockets = new Map(); // sessionId -> { sock, isConnected, saveCreds }
     this.authDir = './auth_sessions';
 
+    // Record when the server instance was created so we can show uptime on the root page
+    this.startTime = Date.now();
+
     if (!fs.existsSync(this.authDir)) fs.mkdirSync(this.authDir, { recursive: true });
 
     this.setupExpress();
@@ -127,6 +130,32 @@ class SessionManager {
   }
 
   setupRoutes() {
+    // Root page: simple HTML showing uptime and copyright
+    this.app.get('/', (req, res) => {
+      const uptimeMs = Date.now() - this.startTime;
+      const seconds = Math.floor(uptimeMs / 1000) % 60;
+      const minutes = Math.floor(uptimeMs / 60000) % 60;
+      const hours = Math.floor(uptimeMs / 3600000);
+      const pretty = `${hours}h ${minutes}m ${seconds}s`;
+      const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>whatsapp-hhtp-api</title>
+    <style>body{font-family:Arial,Helvetica,sans-serif;background:#f7f7f7;color:#222;display:flex;align-items:center;justify-content:center;height:100vh;margin:0} .card{background:#fff;padding:24px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.08);max-width:420px;text-align:center} h1{margin:0 0 8px;font-size:20px} p{margin:6px 0;color:#555} footer{margin-top:12px;font-size:12px;color:#999}</style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>whatsapp-hhtp-api</h1>
+      <p>API uptime: <strong>${pretty}</strong></p>
+      <footer>© made by codeskytz</footer>
+    </div>
+  </body>
+</html>`;
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+    });
     // Health check endpoint
     this.app.get('/health', (req, res) => {
       res.json({ 
