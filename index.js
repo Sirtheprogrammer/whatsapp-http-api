@@ -9,6 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import db from './db.js';
+import registerStatusRoutes from './functions/status.js';
 
 class SessionManager {
   constructor() {
@@ -19,11 +20,88 @@ class SessionManager {
     if (!fs.existsSync(this.authDir)) fs.mkdirSync(this.authDir, { recursive: true });
 
     this.setupExpress();
-    // initialize DB
-    db.init().catch(err => {
-      console.error('Failed to initialize DB:', err);
+    // initialize DB and restore sessions
+    db.init().then(() => this.restoreSessions()).catch(err => {
+      console.error('Failed to initialize DB or restore sessions:', err);
       process.exit(1);
     });
+  }
+
+  // Restore sessions previously saved in the DB
+  async restoreSessions() {
+    try {
+      const rows = await db.listSessions();
+      for (const r of rows) {
+        const id = r.id;
+        // load persisted auth to check if session appears paired
+        let saved = await db.loadSession(id).catch(() => null);
+        let hasCreds = saved && (saved['creds.json']?.me || saved.creds?.me);
+        // Fallback: if DB doesn't have creds, check filesystem for creds.json
+        if (!hasCreds) {
+          const folder = path.join(this.authDir, id);
+          const credsPath = path.join(folder, 'creds.json');
+          if (fs.existsSync(credsPath)) {
+            try {
+              const data = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+              if (data && data.me) {
+                hasCreds = true;
+                // ensure DB is updated with filesystem state for future restarts
+                const out = {};
+                const files = fs.readdirSync(folder);
+                for (const f of files) {
+                  try {
+                    out[f] = JSON.parse(fs.readFileSync(path.join(folder, f), 'utf8'));
+                  } catch (e) { /* ignore parse errors */ }
+                }
+                saved = out;
+                await db.saveSession(id, out).catch(e => console.error('Failed to save session from fs to DB', id, e));
+              }
+            } catch (e) {
+              // ignore parse errors
+            }
+          }
+        }
+        if (!hasCreds) {
+          console.log(`Skipping restore for ${id} - no credentials present`);
+          continue;
+        }
+        // start each paired session but don't block startup
+        this.startSession(id).then(() => {
+          console.log(`Restored session ${id}`);
+        }).catch(err => {
+          console.error(`Failed to restore session ${id}:`, err.message || err);
+        });
+      }
+      // Also scan filesystem for any auth folders not present in DB and restore them
+      try {
+        const folders = fs.readdirSync(this.authDir, { withFileTypes: true })
+          .filter(d => d.isDirectory())
+          .map(d => d.name);
+        const dbIds = new Set(rows.map(r => r.id));
+        for (const id of folders) {
+          if (dbIds.has(id)) continue;
+          const credsPath = path.join(this.authDir, id, 'creds.json');
+          if (!fs.existsSync(credsPath)) continue;
+          try {
+            const data = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+            if (data && data.me) {
+              // import into DB and start session
+              const out = {};
+              const files = fs.readdirSync(path.join(this.authDir, id));
+              for (const f of files) {
+                try { out[f] = JSON.parse(fs.readFileSync(path.join(this.authDir, id, f), 'utf8')); } catch (e) { }
+              }
+              await db.saveSession(id, out).catch(e => console.error('Failed to import session from fs to DB', id, e));
+              this.startSession(id).then(() => console.log(`Imported and restored session ${id}`)).catch(err => console.error(`Failed to restore imported session ${id}:`, err));
+            }
+          } catch (e) { /* ignore parse errors */ }
+        }
+      } catch (e) {
+        // ignore filesystem scan errors
+      }
+    } catch (err) {
+      console.error('Failed to load sessions from DB:', err.message || err);
+    }
   }
 
   setupExpress() {
@@ -40,7 +118,9 @@ class SessionManager {
     });
 
     // Routes
-    this.setupRoutes();
+  this.setupRoutes();
+  // mount status/broadcast routes
+  this.app.use('/', registerStatusRoutes(this));
     
     // Error handling middleware
     this.app.use(this.errorHandler);
@@ -56,11 +136,30 @@ class SessionManager {
       });
     });
 
+    // Diagnostic: get last status sent by a session
+    this.app.get('/sessions/:id/status/last', (req, res) => {
+      const id = req.params.id;
+      if (!id) return res.status(400).json({ error: 'Session ID required' });
+      const s = this.sockets.get(id);
+      if (!s) return res.status(404).json({ error: 'Session not found' });
+      (async () => {
+        if (s.lastStatus) return res.json({ lastStatus: s.lastStatus });
+        try {
+          const last = await db.loadLastStatus(id).catch(() => null);
+          return res.json({ lastStatus: last || null });
+        } catch (e) {
+          return res.json({ lastStatus: null });
+        }
+      })();
+    });
+
     // Session management
     this.app.post('/sessions', this.createSession.bind(this));
     this.app.get('/sessions', this.listSessions.bind(this));
     this.app.post('/sessions/:id/pair-request', this.handlePairRequest.bind(this));
     this.app.post('/sessions/:id/send-message', this.handleSendMessage.bind(this));
+    this.app.get('/sessions/:id/status', this.getSessionStatus.bind(this));
+    this.app.post('/sessions/:id/sync', this.syncSession.bind(this));
     this.app.delete('/sessions/:id', this.deleteSession.bind(this));
   }
 
@@ -94,6 +193,9 @@ class SessionManager {
     // Persist creds to DB whenever they update
     sock.ev.on('creds.update', async () => {
       try {
+        // first let Baileys persist to files
+        try { await saveCreds(); } catch (e) { /* continue even if saveCreds fails */ }
+
         const folder = path.join(this.authDir, sessionId);
         const out = {};
         if (fs.existsSync(folder)) {
@@ -111,8 +213,6 @@ class SessionManager {
       } catch (err) {
         console.error('Failed to persist creds to DB for session', sessionId, err);
       }
-      // still call saveCreds to maintain baileys expected behavior
-      try { await saveCreds(); } catch (e) { /* no-op */ }
     });
 
     sock.ev.on('connection.update', async (update) => {
@@ -163,6 +263,21 @@ class SessionManager {
       } catch (error) {
         console.log(`[${sessionId}] Could not get user info:`, error.message);
       }
+      // ensure creds are saved to DB now that session is open
+      try {
+        if (s.saveCreds) await s.saveCreds();
+      } catch (e) { /* ignore */ }
+      try {
+        const folder = path.join(this.authDir, sessionId);
+        const out = {};
+        if (fs.existsSync(folder)) {
+          const files = fs.readdirSync(folder);
+          for (const f of files) {
+            try { out[f] = JSON.parse(fs.readFileSync(path.join(folder, f), 'utf8')); } catch (e) { }
+          }
+        }
+        await db.saveSession(sessionId, out).catch(e => console.error('Failed to save session on open', sessionId, e));
+      } catch (e) { /* ignore */ }
     } else if (connection === 'connecting') {
       s.isConnected = false;
       console.log(`[${sessionId}] 🔄 Connecting to WhatsApp...`);
@@ -263,6 +378,44 @@ class SessionManager {
         error: 'Failed to send message',
         details: error.message
       });
+    }
+  }
+
+  async syncSession(req, res) {
+    const sessionId = req.params.id;
+    if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+    try {
+      const folder = path.join(this.authDir, sessionId);
+      if (!fs.existsSync(folder)) return res.status(404).json({ error: 'Session auth folder not found' });
+      const out = {};
+      const files = fs.readdirSync(folder);
+      for (const f of files) {
+        try { out[f] = JSON.parse(fs.readFileSync(path.join(folder, f), 'utf8')); } catch (e) { }
+      }
+      await db.saveSession(sessionId, out);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to sync session', details: err.message });
+    }
+  }
+
+  async getSessionStatus(req, res) {
+    const sessionId = req.params.id;
+    if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+    try {
+      const s = this.sockets.get(sessionId);
+      const folder = path.join(this.authDir, sessionId);
+      const hasFiles = fs.existsSync(folder) && fs.readdirSync(folder).length > 0;
+      const dbRow = await db.loadSession(sessionId).catch(() => null);
+      const hasDbCreds = !!(dbRow && (dbRow['creds.json']?.me || dbRow.creds?.me));
+      res.json({
+        id: sessionId,
+        connected: !!s?.isConnected,
+        hasFiles,
+        hasDbCreds
+      });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to get status', details: err.message });
     }
   }
 
@@ -390,6 +543,24 @@ class SessionManager {
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: 'Failed to delete session', details: err.message });
+    }
+  }
+
+  async getSessionStatus(req, res) {
+    const sessionId = req.params.id;
+    if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+    try {
+      const s = this.sockets.get(sessionId);
+      const folder = path.join(this.authDir, sessionId);
+      const hasAuth = fs.existsSync(folder) && fs.readdirSync(folder).length > 0;
+      res.json({
+        id: sessionId,
+        connected: !!(s && s.isConnected),
+        running: !!s,
+        hasAuth
+      });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to get session status', details: err.message });
     }
   }
 }
