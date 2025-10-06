@@ -1,96 +1,129 @@
 # WhatsApp HTTP API
 
-A Node.js REST API for managing WhatsApp sessions and sending messages using Baileys.
+![Node.js](https://img.shields.io/badge/Node.js-18+-green?logo=node.js\&logoColor=white)
+![Express](https://img.shields.io/badge/Express.js-Backend-lightgrey?logo=express)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-blue?logo=postgresql)
+![License](https://img.shields.io/badge/License-MIT-yellow)
+![Status](https://img.shields.io/badge/Status-Stable-success)
 
-This project supports multiple concurrent sessions, persistent auth stored in PostgreSQL, and folder-based auth state compatible with Baileys' `useMultiFileAuthState()`.
+A high-performance **Node.js REST API** for managing WhatsApp sessions and sending messages using **Baileys**.
+Supports multiple concurrent sessions, persistent authentication in PostgreSQL, and folder-based auth compatible with Baileys’ `useMultiFileAuthState()`.
 
-## Key features
+---
 
-- Multi-session support (one session per user/account)
-- Persistent auth state stored in PostgreSQL (JSONB)
-- Endpoints to create/list/delete sessions, request pairing codes, and send messages
-- Auto-reconnect and graceful shutdown
-- Health and basic status endpoints
+## Tech Stack
 
-## Quick start
+<p align="left">
+  <img src="https://skillicons.dev/icons?i=nodejs,express,postgres,js,bash,linux,git" />
+  <img src="https://raw.githubusercontent.com/WhiskeySockets/Baileys/refs/heads/master/Media/logo.png" alt="Baileys" width="48" height="100" />
+</p>
 
-1. Install dependencies
+---
+
+## Key Features
+
+* Multi-session support (one session per user/account)
+* Persistent auth state stored in PostgreSQL (JSONB)
+* REST endpoints for session management, pairing, and messaging
+* Auto-reconnect and graceful shutdown
+* Health and status endpoints
+
+---
+
+## Quick Start
+
+### 1. Install Dependencies
 
 ```bash
 npm install
 ```
 
-2. (Optional) Set your Postgres DATABASE_URL. By default the app uses:
+### 2. Configure PostgreSQL (optional)
 
-```
-postgresql://sirtheprogrammer:91JDib75NISrkKNZ4Aakhyyzz7aBPh77@dpg-d3ge05p5pdvs73ee0040-a.oregon-postgres.render.com/whatssession
-```
-
-To use your own database, export the URL before starting the server:
+Set your database connection URL:
 
 ```bash
 export DATABASE_URL="postgresql://user:pass@host:5432/dbname"
 ```
 
-3. Start the server
+> Default configuration uses:
+>
+> ```
+> postgresql://sirtheprogrammer............................................
+> ```
+
+### 3. Run the Server
 
 ```bash
 node index.js
 ```
 
-By default the server listens on port 3000.
+By default, the server runs at `http://localhost:3000`.
 
-## Endpoints
+---
 
-All endpoints are JSON and use HTTP status codes.
+## API Endpoints
 
-### Create a session
+All endpoints accept and return JSON, and use standard HTTP status codes.
 
-Create a new session ID and start the socket in the background.
+---
 
-POST /sessions
+### Create a Session
 
-Response (201):
+**POST** `/sessions`
+
+Creates a new session ID and starts the socket in the background.
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/sessions \
+     -H "Content-Type: application/json"
+```
+
+**Response:**
 
 ```json
 { "id": "<session-id>" }
 ```
 
-Example:
+---
 
-```bash
-curl -X POST http://localhost:3000/sessions -H "Content-Type: application/json"
-```
+### List Sessions
 
-### List sessions
+**GET** `/sessions`
 
-GET /sessions
-
-Response: array of sessions from the DB:
+**Response:**
 
 ```json
-[ { "id": "...", "created_at": "...", "updated_at": "..." }, ... ]
+[
+  { "id": "...", "created_at": "...", "updated_at": "..." }
+]
 ```
 
-### Request pairing code for a session
+---
 
-POST /sessions/:id/pair-request
+### Request Pairing Code
 
-Body:
+**POST** `/sessions/:id/pair-request`
+
+**Body:**
 
 ```json
 { "number": "+1234567890" }
 ```
 
-This will ask Baileys to request a pairing code for the given phone number. You should enter the returned pairing code on the user's WhatsApp (Linked devices / Companion setup).
-
-Response:
+**Response:**
 
 ```json
-{ "success": true, "pairingCode": "123456", "message": "Enter this code in WhatsApp to pair your device" }
+{
+  "success": true,
+  "pairingCode": "123456",
+  "message": "Enter this code in WhatsApp to pair your device"
+}
 ```
 
-Example:
+**Example:**
 
 ```bash
 curl -X POST http://localhost:3000/sessions/<id>/pair-request \
@@ -98,23 +131,25 @@ curl -X POST http://localhost:3000/sessions/<id>/pair-request \
   -d '{"number":"+1234567890"}'
 ```
 
-### Send message via session
+---
 
-POST /sessions/:id/send-message
+### Send Message
 
-Body:
+**POST** `/sessions/:id/send-message`
+
+**Body:**
 
 ```json
 { "to": "+1234567890", "message": "Hello from API" }
 ```
 
-Response:
+**Response:**
 
 ```json
 { "success": true, "messageId": "...", "timestamp": 169... }
 ```
 
-Example:
+**Example:**
 
 ```bash
 curl -X POST http://localhost:3000/sessions/<id>/send-message \
@@ -122,52 +157,50 @@ curl -X POST http://localhost:3000/sessions/<id>/send-message \
   -d '{"to":"+1234567890","message":"Hello"}'
 ```
 
-### Delete / stop session
+---
 
-DELETE /sessions/:id
+### Delete / Stop Session
 
-This stops the socket, removes the auth folder (`./auth_sessions/:id`) and deletes the DB row.
+**DELETE** `/sessions/:id`
 
-Example:
+Stops the socket, deletes the auth folder (`./auth_sessions/:id`), and removes the entry from the database.
+
+**Example:**
 
 ```bash
 curl -X DELETE http://localhost:3000/sessions/<id>
 ```
 
-### Health
+---
 
-GET /health
+### Health Check
+
+**GET** `/health`
 
 Returns server health and a timestamp.
 
-### Notes on pairing and connection
+---
 
-- When you request a pairing code, Baileys will return a code which must be entered in the WhatsApp mobile app (Linked devices / Companion setup). A successful pairing will persist credentials in the session's folder and the DB.
-- If a session is logged out, the app deletes the DB row and folder; create a new session to re-pair.
+## Author
 
-## Data persistence and database
+**SirTheProgrammer**
+[GitHub](https://github.com/sirtheprogrammer)
 
-- The app stores every file inside the `./auth_sessions/<sessionId>/` folder into a JSON object which is saved as `auth_json` in the `sessions` table (JSONB column).
-- On session start the DB contents are restored back to the folder so Baileys can read them.
-- The `db.js` module creates the `sessions` table automatically on startup.
-
-## Security
-
-- Never commit auth files or DB credentials to version control.
-- Use HTTPS and restrict access to the API in production.
-- Rotate DB credentials periodically.
-
-## Troubleshooting
-
-- If `pair-request` returns `Cannot read properties of undefined (reading 'public')` it means Baileys couldn't find a proper creds state. Try deleting the session and creating a new one, or ensure network connectivity.
-- Inspect server logs for messages prefixed with `[<sessionId>]` to follow connection updates for each session.
-
-## Next improvements (suggested)
-
-- Add a `GET /sessions/:id/status` endpoint returning connection state and presence of auth files.
-- Add webhooks for inbound messages instead of relying on logs.
-- Support encrypted storage for auth data.
+> Built for automation, scalability, and seamless WhatsApp integration.
 
 ---
 
-If you want, I can add the `GET /sessions/:id/status` endpoint now and run the smoke tests (create session, pair-request) to confirm everything works end-to-end. Provide permission and I'll execute the sequence against your running server and paste responses.
+## Future Enhancements
+
+* WebSocket live message tracking
+* Web dashboard for session management
+* OAuth2 / JWT-based API authentication
+* Prometheus metrics endpoint
+
+---
+
+## License
+
+MIT © 2025 — *SirTheProgrammer*
+
+---
