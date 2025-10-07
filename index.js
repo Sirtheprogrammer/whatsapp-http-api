@@ -22,6 +22,10 @@ class SessionManager {
 
     if (!fs.existsSync(this.authDir)) fs.mkdirSync(this.authDir, { recursive: true });
 
+  // store received messages per session in-memory (small cache)
+  // structure: { [sessionId]: [ { id, from, isGroup, timestamp, text, raw } ] }
+  this.receivedMessages = new Map();
+
     this.setupExpress();
     // initialize DB and restore sessions
     db.init().then(() => this.restoreSessions()).catch(err => {
@@ -182,9 +186,70 @@ class SessionManager {
       })();
     });
 
+    // Get received messages for a session
+    // Query params:
+    // - type=group|individual (optional)
+    // - limit=number (optional, default 50)
+    // - since=unix ms timestamp (optional)
+    this.app.get('/sessions/:id/messages', (req, res) => {
+      try {
+        const sessionId = req.params.id;
+        if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+
+        const all = this.receivedMessages.get(sessionId) || [];
+        let results = all.slice();
+
+        const { type, limit, since } = req.query;
+        if (type === 'group') {
+          results = results.filter(m => m.isGroup);
+        } else if (type === 'individual') {
+          results = results.filter(m => !m.isGroup);
+        }
+
+        if (since) {
+          const sinceNum = Number(since);
+          if (!Number.isNaN(sinceNum)) results = results.filter(m => m.timestamp >= sinceNum);
+        }
+
+        const lim = Math.min(500, Math.max(1, Number(limit) || 50));
+        results = results.slice(0, lim);
+
+        // return sanitized version (avoid sending huge raw objects by default)
+        const sanitized = results.map(r => ({ id: r.id, from: r.from, isGroup: r.isGroup, timestamp: r.timestamp, text: r.text }));
+        res.json({ count: sanitized.length, messages: sanitized });
+      } catch (err) {
+        console.error('Failed to list messages:', err);
+        res.status(500).json({ error: 'Failed to get messages', details: err.message });
+      }
+    });
+
     // Session management
     this.app.post('/sessions', this.createSession.bind(this));
     this.app.get('/sessions', this.listSessions.bind(this));
+    // Get or set webhooks for a session
+    this.app.get('/sessions/:id/webhooks', async (req, res) => {
+      const sessionId = req.params.id;
+      if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+      try {
+        const w = await db.loadWebhooks(sessionId).catch(() => null);
+        res.json({ webhooks: w || {} });
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to load webhooks', details: e.message });
+      }
+    });
+
+    this.app.post('/sessions/:id/webhooks', async (req, res) => {
+      const sessionId = req.params.id;
+      if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+      const { incoming, group, status } = req.body;
+      const payload = { incoming: incoming || null, group: group || null, status: status || null };
+      try {
+        await db.saveWebhooks(sessionId, payload);
+        res.json({ success: true, webhooks: payload });
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to save webhooks', details: e.message });
+      }
+    });
     this.app.post('/sessions/:id/pair-request', this.handlePairRequest.bind(this));
     this.app.post('/sessions/:id/send-message', this.handleSendMessage.bind(this));
     this.app.get('/sessions/:id/status', this.getSessionStatus.bind(this));
@@ -320,17 +385,51 @@ class SessionManager {
     for (const message of messages) {
       if (!message.key.fromMe && message.message) {
         const from = message.key.remoteJid;
-        const messageText = message.message.conversation || message.message.extendedTextMessage?.text;
+        const isGroup = from && from.endsWith('@g.us');
+        const timestamp = (message.messageTimestamp || Date.now()) * 1000;
+        const text = message.message.conversation || message.message.extendedTextMessage?.text || null;
 
-        console.log(`[${sessionId}] 📨 Message from ${from}: ${messageText}`);
+        console.log(`[${sessionId}] 📨 Message from ${from}: ${text}`);
+
+  // persist in-memory for quick access
+        try {
+          const store = this.receivedMessages.get(sessionId) || [];
+          const entry = {
+            id: message.key.id || `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+            from,
+            isGroup,
+            timestamp,
+            text,
+            raw: message
+          };
+          store.unshift(entry); // latest first
+          // trim to a reasonable max (keep last 500 messages per session)
+          if (store.length > 500) store.length = 500;
+          this.receivedMessages.set(sessionId, store);
+        } catch (e) {
+          console.error('Failed to store incoming message in memory', e);
+        }
+
+        // deliver webhook if configured
+        try {
+          const webhooks = await db.loadWebhooks(sessionId).catch(() => null) || {};
+          const payload = { id: entry.id, from: entry.from, isGroup: entry.isGroup, timestamp: entry.timestamp, text: entry.text };
+          const target = entry.isGroup ? webhooks.group : webhooks.incoming;
+          if (target) {
+            this.postToWebhook(target, payload).catch(e => console.error('Webhook delivery failed', e));
+          }
+        } catch (e) {
+          console.error('Failed to process webhook for incoming message', e);
+        }
 
         // Example: Echo bot
-        if (messageText && messageText.toLowerCase() === 'ping') {
+        if (text && text.toLowerCase() === 'ping') {
           await this.sendMessage(sessionId, from, 'pong').catch(e => console.error(e));
         }
       }
     }
   }
+
 
   async handlePairRequest(req, res) {
     try {
@@ -487,6 +586,31 @@ class SessionManager {
       error: 'Internal server error',
       timestamp: new Date().toISOString()
     });
+  }
+
+  // POST JSON payload to webhook URL with a short timeout
+  async postToWebhook(url, payload) {
+    if (!url) return;
+    try {
+      // use global fetch (Node 18+). Set a short timeout via AbortController
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      clearTimeout(id);
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '<no-body>');
+        throw new Error(`Webhook POST failed: ${res.status} ${txt}`);
+      }
+      return true;
+    } catch (e) {
+      // swallow errors here; caller logs
+      throw e;
+    }
   }
 
   start(port = 3000) {

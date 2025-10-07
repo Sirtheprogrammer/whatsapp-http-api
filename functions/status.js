@@ -109,6 +109,16 @@ export default function registerStatusRoutes(manager) {
         if (sess) sess.lastStatus = result;
         // Persist last status in DB as well
         await db.saveLastStatus(sessionId, result);
+        // deliver status webhook if configured
+        try {
+          const webhooks = await db.loadWebhooks(sessionId).catch(() => null) || {};
+          if (webhooks && webhooks.status) {
+            // keep the payload small and useful
+            const payload = { sessionId, result: { id: result.key?.id, remoteJid: result.key?.remoteJid, timestamp: Date.now() } };
+            // best-effort POST
+            try { await fetch(webhooks.status, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), timeout: 5000 }); } catch (e) { /* ignore webhook errors */ }
+          }
+        } catch (e) { /* ignore */ }
       } catch (e) { /* ignore caching/persist errors */ }
       res.json({ success: true, result });
     } catch (err) {
