@@ -1,29 +1,6 @@
 # WhatsApp HTTP API
 
 ![Node.js](https://img.shields.io/badge/Node.js-18+-green?logo=node.js\&logoColor=white)
-![Express](https://img.shields.io/badge/Express.js-Backend-lightgrey?logo=express)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-blue?logo=postgresql)
-![License](https://img.shields.io/badge/License-MIT-yellow)
-![Status](https://img.shields.io/badge/Status-Stable-success)
-
-A high-performance **Node.js REST API** for managing WhatsApp sessions and sending messages using **Baileys**.
-Supports multiple concurrent sessions, persistent authentication in PostgreSQL, and folder-based auth compatible with Baileys’ `useMultiFileAuthState()`.
-
----
-
-## Tech Stack
-
-<p align="left">
-  <img src="https://skillicons.dev/icons?i=nodejs,express,postgres,js,bash,linux,git" />
-  <img src="https://baileys.wiki/img/WhiskeySockets-colorful.png" alt="Baileys" height="50" width="50"/>
-</p>
-
----
-
-## Key Features
-
-* Multi-session support (one session per user/account)
-* Persistent auth state stored in PostgreSQL (JSONB)
 # WhatsApp HTTP API
 
 ![Node.js](https://img.shields.io/badge/Node.js-18+-green?logo=node.js&logoColor=white)
@@ -35,18 +12,18 @@ A small but powerful Node.js REST API that wraps the Baileys WhatsApp client and
 
 ---
 
-## What's new in this build
+## Quick highlights
 
-- Multi-session support with persistent auth state (Postgres + per-session auth folders)
-- Root page at `/` showing API uptime and author
-- GET `/sessions/:id/messages` to retrieve received messages (group/individual filters)
-- Per-session webhooks for incoming messages, group messages, and status updates
-- POST `/sessions/:id/status/send` for sending statuses (stories/broadcasts)
-- In-memory message capture (default) with optional persistence suggested
+- Multi-session support (one session per WhatsApp account)
+- Persistent auth state (stored in PostgreSQL and mirrored to per-session auth folders)
+- Incoming message capture (in-memory) with filtering by group vs individual
+- Per-session webhooks for incoming messages, group messages and status/send events
+- Status (story) sending support (text, image, video) via `/sessions/:id/status/send`
+- Small root page at `/` showing uptime and author credit
 
 ---
 
-## Quick start
+## Getting started
 
 1. Install dependencies:
 
@@ -54,7 +31,7 @@ A small but powerful Node.js REST API that wraps the Baileys WhatsApp client and
 npm install
 ```
 
-2. Configure database (optional):
+2. Configure database (optional, defaults are handled):
 
 ```bash
 export DATABASE_URL="postgresql://user:pass@host:5432/dbname"
@@ -74,7 +51,7 @@ Server runs at http://localhost:3000 by default.
 
 GET `/`
 
-A lightweight HTML page named `whatsapp-hhtp-api` that displays the API uptime and a small footer "© made by codeskytz".
+A lightweight HTML page titled `whatsapp-hhtp-api` that displays the API uptime and a footer "© made by codeskytz".
 
 ---
 
@@ -83,8 +60,8 @@ A lightweight HTML page named `whatsapp-hhtp-api` that displays the API uptime a
 Create, list, pair, and delete sessions.
 
 - POST `/sessions` — create & start a new session (returns `id`)
-- GET `/sessions` — list existing sessions
-- POST `/sessions/:id/pair-request` — request pairing code for a phone number
+- GET `/sessions` — list existing sessions (id, created_at, updated_at)
+- POST `/sessions/:id/pair-request` — request a pairing code for a phone number (body: `{ "number": "+123..." }`)
 - DELETE `/sessions/:id` — stop a session and delete auth data
 
 Examples:
@@ -118,6 +95,26 @@ Returns message id and timestamp on success.
 
 ---
 
+## Status / Broadcast (Stories)
+
+POST `/sessions/:id/status/send`
+
+Supports sending text, images, and videos as status updates. The handler accepts multiple input methods (JSON text, URL, multipart upload, base64 or server-local path). After a successful send the server saves `last_status` into the sessions DB row for diagnostics.
+
+Example (text):
+
+```bash
+curl -X POST http://localhost:3000/sessions/<id>/status/send \
+  -H "Content-Type: application/json" \
+  -d '{ "type":"text", "text":"Hello from API" }'
+```
+
+Diagnostics:
+
+- GET `/sessions/:id/status/last` — returns the last status payload saved for a session (if any)
+
+---
+
 ## Incoming messages (read-only)
 
 The server captures incoming messages per-session in-memory and exposes them via an endpoint.
@@ -138,8 +135,8 @@ Response example:
 
 Notes:
 
-- Messages are stored in-memory by default (non-persistent). If you need durable storage, add DB persistence (Postgres) or file-based storage.
 - `isGroup` is true for group JIDs (ending with `@g.us`).
+- Messages are stored in-memory by default (non-persistent). If you need durable storage, persist them to the DB or files.
 
 ---
 
@@ -174,22 +171,6 @@ Delivery notes:
 
 ---
 
-## Status / Broadcast (Stories)
-
-POST `/sessions/:id/status/send`
-
-Supports sending text, images, and videos as status updates. The `functions/status.js` handler accepts multiple input methods (JSON text, URL, multipart upload, base64, or server-local path). After a successful send the server saves `last_status` into the sessions DB row for diagnostics.
-
-Example (text):
-
-```bash
-curl -X POST http://localhost:3000/sessions/<id>/status/send \
-  -H "Content-Type: application/json" \
-  -d '{ "type":"text", "text":"Hello from API" }'
-```
-
----
-
 ## Health & diagnostics
 
 - GET `/health` — server health and timestamp
@@ -199,12 +180,12 @@ curl -X POST http://localhost:3000/sessions/<id>/status/send \
 
 ## Security & privacy notes
 
-- This project intentionally stores WhatsApp auth state on disk and optionally in Postgres; keep your DB and `./auth_sessions` folder secure.
+- This project stores WhatsApp auth state on disk and optionally in Postgres; keep your DB and `./auth_sessions` folder secure.
 - Webhooks may deliver user message content to third-party URLs — only configure webhooks you trust.
 
 ---
 
-## Contributing & roadmap
+## Roadmap / Contributing
 
 Planned enhancements:
 
@@ -220,3 +201,4 @@ Contributions welcome via pull requests.
 ## License
 
 MIT © 2025 — SirTheProgrammer
+
