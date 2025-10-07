@@ -254,7 +254,8 @@ class SessionManager {
                 // forward only individual messages (not groups)
                 if (m.isGroup) continue;
                 try {
-                  await this.postToWebhook(incoming, m);
+                  const payload = this.buildWebhookPayload(m);
+                  await this.postToWebhook(incoming, payload);
                   await db.updateMessageDelivery(m.id, { delivered: true, pending_webhook: null, last_delivery_error: null }).catch(() => null);
                 } catch (e) {
                   await db.updateMessageDelivery(m.id, { delivered: false, pending_webhook: incoming, last_delivery_error: String(e.message || e) }).catch(() => null);
@@ -268,7 +269,8 @@ class SessionManager {
               for (const m of pending) {
                 if (!m.isGroup) continue;
                 try {
-                  await this.postToWebhook(group, m);
+                  const payload = this.buildWebhookPayload(m);
+                  await this.postToWebhook(group, payload);
                   await db.updateMessageDelivery(m.id, { delivered: true, pending_webhook: null, last_delivery_error: null }).catch(() => null);
                 } catch (e) {
                   await db.updateMessageDelivery(m.id, { delivered: false, pending_webhook: group, last_delivery_error: String(e.message || e) }).catch(() => null);
@@ -281,6 +283,47 @@ class SessionManager {
         })();
       } catch (e) {
         res.status(500).json({ error: 'Failed to save webhooks', details: e.message });
+      }
+    });
+    
+    // Partially update webhooks for a session (body may contain incoming, group, status)
+    this.app.patch('/sessions/:id/webhooks', async (req, res) => {
+      const sessionId = req.params.id;
+      if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+      const { incoming, group, status } = req.body || {};
+      try {
+        // load existing and merge
+        const existing = await db.loadWebhooks(sessionId).catch(() => ({})) || {};
+        const merged = Object.assign({}, existing);
+        if (typeof incoming !== 'undefined') merged.incoming = incoming;
+        if (typeof group !== 'undefined') merged.group = group;
+        if (typeof status !== 'undefined') merged.status = status;
+        await db.saveWebhooks(sessionId, merged);
+        res.json({ success: true, webhooks: merged });
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to update webhooks', details: e.message });
+      }
+    });
+
+    // Delete webhooks: body optional { type: 'incoming'|'group'|'status' }. If no type, clear all webhooks for session.
+    this.app.delete('/sessions/:id/webhooks', async (req, res) => {
+      const sessionId = req.params.id;
+      if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+      const { type } = req.body || {};
+      try {
+        const existing = await db.loadWebhooks(sessionId).catch(() => ({})) || {};
+        if (!type) {
+          // clear all
+          await db.saveWebhooks(sessionId, {});
+          return res.json({ success: true, webhooks: {} });
+        }
+        if (!['incoming', 'group', 'status'].includes(type)) return res.status(400).json({ error: 'Invalid webhook type' });
+        const copy = Object.assign({}, existing);
+        delete copy[type];
+        await db.saveWebhooks(sessionId, copy);
+        res.json({ success: true, webhooks: copy });
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to delete webhooks', details: e.message });
       }
     });
     this.app.post('/sessions/:id/pair-request', this.handlePairRequest.bind(this));
@@ -296,7 +339,8 @@ class SessionManager {
         const results = [];
         for (const m of messages) {
           try {
-            await this.postToWebhook(webhook, m);
+            const payload = this.buildWebhookPayload(m);
+            await this.postToWebhook(webhook, payload);
             await db.updateMessageDelivery(m.id, { delivered: true, pending_webhook: null, last_delivery_error: null });
             results.push({ id: m.id, status: 'delivered' });
           } catch (e) {
@@ -337,7 +381,8 @@ class SessionManager {
             continue;
           }
           try {
-            await this.postToWebhook(target, m);
+            const payload = this.buildWebhookPayload(m);
+            await this.postToWebhook(target, payload);
             await db.updateMessageDelivery(m.id, { delivered: true, pending_webhook: null, last_delivery_error: null });
             results.push({ id: m.id, status: 'delivered' });
           } catch (e) {
@@ -523,7 +568,7 @@ class SessionManager {
           const webhooks = await db.loadWebhooks(sessionId).catch(() => null) || {};
           // ensure entry exists (storage may have failed)
           if (entry) {
-            const payload = { id: entry.id, from: entry.from, isGroup: entry.isGroup, timestamp: entry.timestamp, text: entry.text };
+            const payload = this.buildWebhookPayload(entry);
             const target = entry.isGroup ? webhooks.group : webhooks.incoming;
             if (target) {
               try {
@@ -730,6 +775,44 @@ class SessionManager {
       // swallow errors here; caller logs
       throw e;
     }
+  }
+
+  // Try to extract an international phone number (+123...) from a jid or raw message
+  formatSenderNumber(jid, raw) {
+    try {
+      // raw may contain participant for group messages
+      let candidate = null;
+      if (raw && raw.key && raw.key.participant) candidate = raw.key.participant;
+      if (!candidate && raw && raw.participant) candidate = raw.participant;
+      if (!candidate) candidate = jid;
+      if (!candidate) return null;
+      // candidate may be like '255683568254@s.whatsapp.net' or '255683568254:12@s.whatsapp.net'
+      const m = String(candidate).match(/(\d{6,15})/);
+      if (!m) return null;
+      return `+${m[1]}`;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Build a normalized payload for webhooks including both the raw JID and a formatted international number when possible
+  buildWebhookPayload(message) {
+    // message may be an 'entry' created in memory or a DB row
+    const fromJid = message.from || message.from_jid || null;
+    const formatted = this.formatSenderNumber(fromJid, message.raw || null) || null;
+    return {
+      id: message.id,
+      fromJid,
+      from: formatted,
+      isGroup: !!message.isGroup,
+      timestamp: message.timestamp || message.timestamp_ms || null,
+      text: message.text || null,
+      delivered: typeof message.delivered !== 'undefined' ? !!message.delivered : undefined,
+      deliveryAttempts: message.deliveryAttempts || message.delivery_attempts || 0,
+      lastDeliveryError: message.lastDeliveryError || message.last_delivery_error || null,
+      pendingWebhook: message.pendingWebhook || message.pending_webhook || null,
+      raw: message.raw || null
+    };
   }
 
   start(port = 3000) {
