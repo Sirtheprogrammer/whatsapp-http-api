@@ -243,6 +243,42 @@ class SessionManager {
       try {
         await db.saveWebhooks(sessionId, payload);
         res.json({ success: true, webhooks: payload });
+
+        // asynchronously attempt to deliver any undelivered messages to the newly set webhooks
+        (async () => {
+          try {
+            // if incoming webhook set, forward undelivered individual messages
+            if (incoming) {
+              const pending = await db.getUndeliveredMessages(sessionId);
+              for (const m of pending) {
+                // forward only individual messages (not groups)
+                if (m.isGroup) continue;
+                try {
+                  await this.postToWebhook(incoming, m);
+                  await db.updateMessageDelivery(m.id, { delivered: true, pending_webhook: null, last_delivery_error: null }).catch(() => null);
+                } catch (e) {
+                  await db.updateMessageDelivery(m.id, { delivered: false, pending_webhook: incoming, last_delivery_error: String(e.message || e) }).catch(() => null);
+                }
+              }
+            }
+
+            // if group webhook set, forward undelivered group messages
+            if (group) {
+              const pending = await db.getUndeliveredMessages(sessionId);
+              for (const m of pending) {
+                if (!m.isGroup) continue;
+                try {
+                  await this.postToWebhook(group, m);
+                  await db.updateMessageDelivery(m.id, { delivered: true, pending_webhook: null, last_delivery_error: null }).catch(() => null);
+                } catch (e) {
+                  await db.updateMessageDelivery(m.id, { delivered: false, pending_webhook: group, last_delivery_error: String(e.message || e) }).catch(() => null);
+                }
+              }
+            }
+          } catch (err) {
+            console.error('Failed to forward pending messages after webhook update', err);
+          }
+        })();
       } catch (e) {
         res.status(500).json({ error: 'Failed to save webhooks', details: e.message });
       }
@@ -453,11 +489,12 @@ class SessionManager {
 
         console.log(`[${sessionId}] 📨 Message from ${from}: ${text}`);
 
-  // persist in-memory for quick access
+        // persist in-memory for quick access
+        let entry = null;
         try {
           const store = this.receivedMessages.get(sessionId) || [];
-          // ensure `entry` is visible to the webhook section below
-          let entry = {
+          // populate entry (declared outside so webhook code below can access it)
+          entry = {
             id: message.key.id || `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
             from,
             isGroup,
