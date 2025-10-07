@@ -151,7 +151,7 @@ class SessionManager {
   </head>
   <body>
     <div class="card">
-      <h1>whatsapp-hhtp-api</h1>
+      <h1>whatsapp-http-api</h1>
       <p>API uptime: <strong>${pretty}</strong></p>
       <footer>© made by codeskytz</footer>
     </div>
@@ -394,7 +394,8 @@ class SessionManager {
   // persist in-memory for quick access
         try {
           const store = this.receivedMessages.get(sessionId) || [];
-          const entry = {
+          // ensure `entry` is visible to the webhook section below
+          let entry = {
             id: message.key.id || `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
             from,
             isGroup,
@@ -412,11 +413,17 @@ class SessionManager {
 
         // deliver webhook if configured
         try {
+          // read webhooks and post sanitized payload
           const webhooks = await db.loadWebhooks(sessionId).catch(() => null) || {};
-          const payload = { id: entry.id, from: entry.from, isGroup: entry.isGroup, timestamp: entry.timestamp, text: entry.text };
-          const target = entry.isGroup ? webhooks.group : webhooks.incoming;
-          if (target) {
-            this.postToWebhook(target, payload).catch(e => console.error('Webhook delivery failed', e));
+          // ensure entry exists (storage may have failed)
+          if (!entry) {
+            // nothing to deliver
+          } else {
+            const payload = { id: entry.id, from: entry.from, isGroup: entry.isGroup, timestamp: entry.timestamp, text: entry.text };
+            const target = entry.isGroup ? webhooks.group : webhooks.incoming;
+            if (target) {
+              this.postToWebhook(target, payload).catch(e => console.error('Webhook delivery failed', e));
+            }
           }
         } catch (e) {
           console.error('Failed to process webhook for incoming message', e);
