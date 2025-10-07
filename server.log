@@ -1,0 +1,33 @@
+(node:115133) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///workspaces/whatsapp-http-api/index.js is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /workspaces/whatsapp-http-api/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+🚀 WhatsApp Bot server running on http://localhost:3000
+📊 Health check: http://localhost:3000/health
+🔗 Create session: POST http://localhost:3000/sessions
+Restored session 408f7372-f7c9-4299-a8db-326bc5548a73
+[408f7372-f7c9-4299-a8db-326bc5548a73] Connection update: connecting
+[408f7372-f7c9-4299-a8db-326bc5548a73] 🔄 Connecting to WhatsApp...
+{"level":30,"time":"2025-10-07T19:15:38.644Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","browser":["Ubuntu","Chrome","22.04.4"],"helloMsg":{"clientHello":{"ephemeral":{"type":"Buffer","data":[200,176,234,141,244,252,76,15,142,170,59,9,172,167,87,131,90,248,3,116,192,48,71,168,13,160,191,192,217,60,1,91]}}},"msg":"connected to WA"}
+{"level":30,"time":"2025-10-07T19:15:38.945Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","node":{"shards":[],"connectType":1,"connectReason":1,"userAgent":{"appVersion":{"primary":2,"secondary":3000,"tertiary":1023223821},"platform":14,"releaseChannel":0,"osVersion":"0.1","device":"Desktop","osBuildNumber":"0.1","localeLanguageIso6391":"en","mnc":"000","mcc":"000","localeCountryIso31661Alpha2":"US"},"webInfo":{"webSubPlatform":0},"passive":false,"pull":true,"username":255793710144,"device":12},"msg":"logging in..."}
+Skipping restore for adafc5ed-9b87-40af-92af-af32225b0c78 - no credentials present
+{"level":30,"time":"2025-10-07T19:15:39.506Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","msg":"handled 0 offline messages/notifications"}
+[408f7372-f7c9-4299-a8db-326bc5548a73] Connection update: undefined
+{"level":30,"time":"2025-10-07T19:15:39.507Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","msg":"Connection is now AwaitingInitialSync, buffering events"}
+{"level":30,"time":"2025-10-07T19:15:39.507Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","msg":"History sync is disabled by config, not waiting for notification. Transitioning to Online."}
+{"level":30,"time":"2025-10-07T19:15:39.560Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","key":"keytype:pre-key","msg":"created new mutex"}
+{"level":30,"time":"2025-10-07T19:15:39.561Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","msg":"29 pre-keys found on server"}
+{"level":30,"time":"2025-10-07T19:15:39.561Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","msg":"Current prekey ID: 127, exists in storage: true"}
+{"level":30,"time":"2025-10-07T19:15:39.561Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","msg":"PreKey validation passed - Server: 29, Current prekey 127 exists"}
+{"level":30,"time":"2025-10-07T19:15:39.840Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","msg":"opened connection to WA"}
+[408f7372-f7c9-4299-a8db-326bc5548a73] Connection update: undefined
+[408f7372-f7c9-4299-a8db-326bc5548a73] Connection update: open
+[408f7372-f7c9-4299-a8db-326bc5548a73] ✅ Connected to WhatsApp successfully
+[408f7372-f7c9-4299-a8db-326bc5548a73] 📱 Authenticated as: codeskytz
+{"level":30,"time":"2025-10-07T19:15:39.843Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","key":"keytype:lid-mapping","msg":"created new mutex"}
+{"level":30,"time":"2025-10-07T19:15:39.848Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","key":"transaction:lid-mapping","msg":"created new mutex"}
+{"level":30,"time":"2025-10-07T19:15:39.851Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","key":"keytype:device-list","msg":"created new mutex"}
+{"level":30,"time":"2025-10-07T19:15:39.854Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","key":"keytype:session","msg":"created new mutex"}
+{"level":30,"time":"2025-10-07T19:15:39.855Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","fromJid":"255793710144:12@s.whatsapp.net","totalDevices":1,"devicesWithSessions":0,"devices":[],"msg":"bulk device migration complete - all user devices processed"}
+{"level":30,"time":"2025-10-07T19:15:39.855Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","key":"transaction:migrate-0-sessions-18679450316992","msg":"created new mutex"}
+{"level":30,"time":"2025-10-07T19:15:39.855Z","pid":115133,"hostname":"codespaces-637adc","class":"baileys","myPN":"255793710144:12@s.whatsapp.net","myLID":"18679450316992:12@lid","msg":"Own LID session created successfully"}

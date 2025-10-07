@@ -191,32 +191,29 @@ class SessionManager {
     // - type=group|individual (optional)
     // - limit=number (optional, default 50)
     // - since=unix ms timestamp (optional)
-    this.app.get('/sessions/:id/messages', (req, res) => {
+    this.app.get('/sessions/:id/messages', async (req, res) => {
       try {
         const sessionId = req.params.id;
         if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
 
-        const all = this.receivedMessages.get(sessionId) || [];
-        let results = all.slice();
-
         const { type, limit, since } = req.query;
-        if (type === 'group') {
-          results = results.filter(m => m.isGroup);
-        } else if (type === 'individual') {
-          results = results.filter(m => !m.isGroup);
+        const opts = { type: type || undefined, limit: Number(limit) || 50, since: since ? Number(since) : undefined };
+
+        try {
+          const rows = await db.getMessages(sessionId, opts);
+          return res.json({ count: rows.length, messages: rows });
+        } catch (e) {
+          // fallback to in-memory cache
+          const all = this.receivedMessages.get(sessionId) || [];
+          let results = all.slice();
+          if (opts.type === 'group') results = results.filter(m => m.isGroup);
+          if (opts.type === 'individual') results = results.filter(m => !m.isGroup);
+          if (opts.since) results = results.filter(m => m.timestamp >= opts.since);
+          const lim = Math.min(500, Math.max(1, opts.limit || 50));
+          results = results.slice(0, lim);
+          const sanitized = results.map(r => ({ id: r.id, from: r.from, isGroup: r.isGroup, timestamp: r.timestamp, text: r.text }));
+          return res.json({ count: sanitized.length, messages: sanitized });
         }
-
-        if (since) {
-          const sinceNum = Number(since);
-          if (!Number.isNaN(sinceNum)) results = results.filter(m => m.timestamp >= sinceNum);
-        }
-
-        const lim = Math.min(500, Math.max(1, Number(limit) || 50));
-        results = results.slice(0, lim);
-
-        // return sanitized version (avoid sending huge raw objects by default)
-        const sanitized = results.map(r => ({ id: r.id, from: r.from, isGroup: r.isGroup, timestamp: r.timestamp, text: r.text }));
-        res.json({ count: sanitized.length, messages: sanitized });
       } catch (err) {
         console.error('Failed to list messages:', err);
         res.status(500).json({ error: 'Failed to get messages', details: err.message });
@@ -252,6 +249,71 @@ class SessionManager {
     });
     this.app.post('/sessions/:id/pair-request', this.handlePairRequest.bind(this));
     this.app.post('/sessions/:id/send-message', this.handleSendMessage.bind(this));
+    // forward messages to an arbitrary webhook immediately (body: { webhook, ids?: [id,...] })
+    this.app.post('/sessions/:id/forward', async (req, res) => {
+      const sessionId = req.params.id;
+      const { webhook, ids } = req.body || {};
+      if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+      if (!webhook) return res.status(400).json({ error: 'Webhook URL required in body' });
+      try {
+        const messages = ids && Array.isArray(ids) && ids.length ? await db.getMessagesByIds(ids, sessionId) : await db.getMessages(sessionId, { limit: 50 });
+        const results = [];
+        for (const m of messages) {
+          try {
+            await this.postToWebhook(webhook, m);
+            await db.updateMessageDelivery(m.id, { delivered: true, pending_webhook: null, last_delivery_error: null });
+            results.push({ id: m.id, status: 'delivered' });
+          } catch (e) {
+            await db.updateMessageDelivery(m.id, { delivered: false, pending_webhook: webhook, last_delivery_error: String(e.message || e) }).catch(() => null);
+            results.push({ id: m.id, status: 'pending', error: String(e.message || e) });
+          }
+        }
+        res.json({ results });
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to forward messages', details: e.message });
+      }
+    });
+
+    // list undelivered or pending messages
+    this.app.get('/sessions/:id/undelivered', async (req, res) => {
+      const sessionId = req.params.id;
+      if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+      try {
+        const rows = await db.getUndeliveredMessages(sessionId);
+        res.json({ count: rows.length, messages: rows });
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to list undelivered messages', details: e.message });
+      }
+    });
+
+    // retry forwarding specific messages (body: { ids?: [id,...], webhook?: url })
+    this.app.post('/sessions/:id/forward/retry', async (req, res) => {
+      const sessionId = req.params.id;
+      const { ids, webhook } = req.body || {};
+      if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+      try {
+        const messages = ids && Array.isArray(ids) && ids.length ? await db.getMessagesByIds(ids, sessionId) : await db.getUndeliveredMessages(sessionId, webhook);
+        const results = [];
+        for (const m of messages) {
+          const target = webhook || m.pendingWebhook || null;
+          if (!target) {
+            results.push({ id: m.id, status: 'skipped', reason: 'no webhook configured' });
+            continue;
+          }
+          try {
+            await this.postToWebhook(target, m);
+            await db.updateMessageDelivery(m.id, { delivered: true, pending_webhook: null, last_delivery_error: null });
+            results.push({ id: m.id, status: 'delivered' });
+          } catch (e) {
+            await db.updateMessageDelivery(m.id, { delivered: false, pending_webhook: target, last_delivery_error: String(e.message || e) }).catch(() => null);
+            results.push({ id: m.id, status: 'pending', error: String(e.message || e) });
+          }
+        }
+        res.json({ results });
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to retry forwarding', details: e.message });
+      }
+    });
     this.app.get('/sessions/:id/status', this.getSessionStatus.bind(this));
     this.app.post('/sessions/:id/sync', this.syncSession.bind(this));
     this.app.delete('/sessions/:id', this.deleteSession.bind(this));
@@ -411,18 +473,31 @@ class SessionManager {
           console.error('Failed to store incoming message in memory', e);
         }
 
-        // deliver webhook if configured
+        // persist to DB and deliver webhook if configured
         try {
+          // try to persist the message to DB (best-effort)
+          try {
+            await db.saveMessage(sessionId, entry).catch(() => null);
+          } catch (e) {
+            // ignore DB persistence errors
+          }
+
           // read webhooks and post sanitized payload
           const webhooks = await db.loadWebhooks(sessionId).catch(() => null) || {};
           // ensure entry exists (storage may have failed)
-          if (!entry) {
-            // nothing to deliver
-          } else {
+          if (entry) {
             const payload = { id: entry.id, from: entry.from, isGroup: entry.isGroup, timestamp: entry.timestamp, text: entry.text };
             const target = entry.isGroup ? webhooks.group : webhooks.incoming;
             if (target) {
-              this.postToWebhook(target, payload).catch(e => console.error('Webhook delivery failed', e));
+              try {
+                await this.postToWebhook(target, payload);
+                // mark delivered in DB
+                await db.updateMessageDelivery(entry.id, { delivered: true, pending_webhook: null, last_delivery_error: null }).catch(() => null);
+              } catch (err) {
+                console.error('Webhook delivery failed', err);
+                // mark pending and save last error
+                await db.updateMessageDelivery(entry.id, { delivered: false, pending_webhook: target, last_delivery_error: String(err.message || err) }).catch(() => null);
+              }
             }
           }
         } catch (e) {
