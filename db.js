@@ -17,6 +17,7 @@ async function init() {
         id TEXT PRIMARY KEY,
         auth_json JSONB,
         last_status JSONB,
+        webhooks JSONB,
         created_at TIMESTAMPTZ DEFAULT now(),
         updated_at TIMESTAMPTZ DEFAULT now()
       );
@@ -24,6 +25,7 @@ async function init() {
     // Ensure column exists for older DBs
     try {
       await client.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_status JSONB`);
+      await client.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS webhooks JSONB`);
     } catch (e) {
       // ignore
     }
@@ -70,6 +72,30 @@ async function loadLastStatus(id) {
   }
 }
 
+async function saveWebhooks(id, webhooks) {
+  const client = await pool.connect();
+  try {
+    await client.query(
+      `INSERT INTO sessions (id, webhooks, updated_at)
+       VALUES ($1, $2, now())
+       ON CONFLICT (id) DO UPDATE SET webhooks = $2, updated_at = now()`,
+      [id, webhooks]
+    );
+  } finally {
+    client.release();
+  }
+}
+
+async function loadWebhooks(id) {
+  const client = await pool.connect();
+  try {
+    const res = await client.query('SELECT webhooks FROM sessions WHERE id = $1', [id]);
+    return res.rows[0]?.webhooks || null;
+  } finally {
+    client.release();
+  }
+}
+
 async function loadSession(id) {
   const client = await pool.connect();
   try {
@@ -105,5 +131,9 @@ export default {
   loadSession,
   deleteSession,
   listSessions,
+  saveLastStatus,
+  loadLastStatus,
+  saveWebhooks,
+  loadWebhooks,
   pool
 };
