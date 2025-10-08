@@ -138,6 +138,8 @@ Notes:
 - `isGroup` is true for group JIDs (ending with `@g.us`).
 - Messages are stored in-memory by default (non-persistent). If you need durable storage, persist them to the DB or files.
 
+Note: In this build incoming messages are persisted to Postgres in the `messages` table (see DB schema below). The endpoint will read from the DB by default and fall back to in-memory cache if the DB is unavailable.
+
 ---
 
 ## Webhooks
@@ -168,6 +170,43 @@ Behavior:
 Delivery notes:
 
 - Webhook POSTs use a short timeout and log failures. The server does not retry failed deliveries by default.
+
+Extended webhook behavior (forwarding and retry):
+
+- The server records delivery metadata for each persisted message (delivered, delivery_attempts, last_delivery_error, pending_webhook).
+- If a webhook delivery fails for a message the server will mark it as pending (store pending_webhook and error). Pending messages can be reviewed and retried via the forwarding endpoints below.
+
+## Forwarding / Undelivered messages
+
+You can forward persisted messages to an arbitrary webhook and inspect pending/failed deliveries.
+
+- POST `/sessions/:id/forward` — forward messages immediately to a given webhook. Body JSON: `{ "webhook": "https://example.com/endpoint", "ids": ["msgId1","msgId2"] }`. If `ids` omitted the API forwards the latest 50 messages for the session.
+- GET `/sessions/:id/undelivered` — list messages that are undelivered or marked pending (shows deliveryAttempts, lastDeliveryError, pendingWebhook)
+- POST `/sessions/:id/forward/retry` — retry forwarding messages. Body JSON: `{ "ids": [...], "webhook": "https://..." }`. If `ids` omitted, retries all pending messages (optionally filtered to a specific webhook when `webhook` provided).
+
+Behavior notes:
+
+- Forwarding endpoints synchronously attempt delivery and update message delivery metadata. Failed deliveries are recorded as pending with the target webhook.
+- The system supports manual retries via `/forward/retry`. If you want automatic background retries or backoff, I can add a worker to scan pending messages and retry them with exponential backoff.
+
+---
+
+## DB schema (messages table)
+
+The `messages` table includes the following columns relevant to forwarding:
+
+- `id` — message id (primary key)
+- `session_id` — session associated with the message
+- `from_jid` — sender JID
+- `is_group` — boolean
+- `timestamp_ms` — original message unix ms timestamp
+- `text` — text content
+- `raw` — raw JSON blob of the message
+- `delivered` — boolean (true if forwarded successfully)
+- `delivered_at` — timestamp the message was forwarded successfully
+- `delivery_attempts` — number of delivery attempts
+- `last_delivery_error` — last error message from webhook delivery
+- `pending_webhook` — target webhook URL when last attempt failed and the message is pending
 
 ---
 

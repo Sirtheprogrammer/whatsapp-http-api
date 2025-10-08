@@ -151,7 +151,7 @@ class SessionManager {
   </head>
   <body>
     <div class="card">
-      <h1>whatsapp-hhtp-api</h1>
+      <h1>whatsapp-http-api</h1>
       <p>API uptime: <strong>${pretty}</strong></p>
       <footer>© made by codeskytz</footer>
     </div>
@@ -191,32 +191,29 @@ class SessionManager {
     // - type=group|individual (optional)
     // - limit=number (optional, default 50)
     // - since=unix ms timestamp (optional)
-    this.app.get('/sessions/:id/messages', (req, res) => {
+    this.app.get('/sessions/:id/messages', async (req, res) => {
       try {
         const sessionId = req.params.id;
         if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
 
-        const all = this.receivedMessages.get(sessionId) || [];
-        let results = all.slice();
-
         const { type, limit, since } = req.query;
-        if (type === 'group') {
-          results = results.filter(m => m.isGroup);
-        } else if (type === 'individual') {
-          results = results.filter(m => !m.isGroup);
+        const opts = { type: type || undefined, limit: Number(limit) || 50, since: since ? Number(since) : undefined };
+
+        try {
+          const rows = await db.getMessages(sessionId, opts);
+          return res.json({ count: rows.length, messages: rows });
+        } catch (e) {
+          // fallback to in-memory cache
+          const all = this.receivedMessages.get(sessionId) || [];
+          let results = all.slice();
+          if (opts.type === 'group') results = results.filter(m => m.isGroup);
+          if (opts.type === 'individual') results = results.filter(m => !m.isGroup);
+          if (opts.since) results = results.filter(m => m.timestamp >= opts.since);
+          const lim = Math.min(500, Math.max(1, opts.limit || 50));
+          results = results.slice(0, lim);
+          const sanitized = results.map(r => ({ id: r.id, from: r.from, isGroup: r.isGroup, timestamp: r.timestamp, text: r.text }));
+          return res.json({ count: sanitized.length, messages: sanitized });
         }
-
-        if (since) {
-          const sinceNum = Number(since);
-          if (!Number.isNaN(sinceNum)) results = results.filter(m => m.timestamp >= sinceNum);
-        }
-
-        const lim = Math.min(500, Math.max(1, Number(limit) || 50));
-        results = results.slice(0, lim);
-
-        // return sanitized version (avoid sending huge raw objects by default)
-        const sanitized = results.map(r => ({ id: r.id, from: r.from, isGroup: r.isGroup, timestamp: r.timestamp, text: r.text }));
-        res.json({ count: sanitized.length, messages: sanitized });
       } catch (err) {
         console.error('Failed to list messages:', err);
         res.status(500).json({ error: 'Failed to get messages', details: err.message });
@@ -246,12 +243,158 @@ class SessionManager {
       try {
         await db.saveWebhooks(sessionId, payload);
         res.json({ success: true, webhooks: payload });
+
+        // asynchronously attempt to deliver any undelivered messages to the newly set webhooks
+        (async () => {
+          try {
+            // if incoming webhook set, forward undelivered individual messages
+            if (incoming) {
+              const pending = await db.getUndeliveredMessages(sessionId);
+              for (const m of pending) {
+                // forward only individual messages (not groups)
+                if (m.isGroup) continue;
+                try {
+                  const payload = this.buildWebhookPayload(m);
+                  await this.postToWebhook(incoming, payload);
+                  await db.updateMessageDelivery(m.id, { delivered: true, pending_webhook: null, last_delivery_error: null }).catch(() => null);
+                } catch (e) {
+                  await db.updateMessageDelivery(m.id, { delivered: false, pending_webhook: incoming, last_delivery_error: String(e.message || e) }).catch(() => null);
+                }
+              }
+            }
+
+            // if group webhook set, forward undelivered group messages
+            if (group) {
+              const pending = await db.getUndeliveredMessages(sessionId);
+              for (const m of pending) {
+                if (!m.isGroup) continue;
+                try {
+                  const payload = this.buildWebhookPayload(m);
+                  await this.postToWebhook(group, payload);
+                  await db.updateMessageDelivery(m.id, { delivered: true, pending_webhook: null, last_delivery_error: null }).catch(() => null);
+                } catch (e) {
+                  await db.updateMessageDelivery(m.id, { delivered: false, pending_webhook: group, last_delivery_error: String(e.message || e) }).catch(() => null);
+                }
+              }
+            }
+          } catch (err) {
+            console.error('Failed to forward pending messages after webhook update', err);
+          }
+        })();
       } catch (e) {
         res.status(500).json({ error: 'Failed to save webhooks', details: e.message });
       }
     });
+    
+    // Partially update webhooks for a session (body may contain incoming, group, status)
+    this.app.patch('/sessions/:id/webhooks', async (req, res) => {
+      const sessionId = req.params.id;
+      if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+      const { incoming, group, status } = req.body || {};
+      try {
+        // load existing and merge
+        const existing = await db.loadWebhooks(sessionId).catch(() => ({})) || {};
+        const merged = Object.assign({}, existing);
+        if (typeof incoming !== 'undefined') merged.incoming = incoming;
+        if (typeof group !== 'undefined') merged.group = group;
+        if (typeof status !== 'undefined') merged.status = status;
+        await db.saveWebhooks(sessionId, merged);
+        res.json({ success: true, webhooks: merged });
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to update webhooks', details: e.message });
+      }
+    });
+
+    // Delete webhooks: body optional { type: 'incoming'|'group'|'status' }. If no type, clear all webhooks for session.
+    this.app.delete('/sessions/:id/webhooks', async (req, res) => {
+      const sessionId = req.params.id;
+      if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+      const { type } = req.body || {};
+      try {
+        const existing = await db.loadWebhooks(sessionId).catch(() => ({})) || {};
+        if (!type) {
+          // clear all
+          await db.saveWebhooks(sessionId, {});
+          return res.json({ success: true, webhooks: {} });
+        }
+        if (!['incoming', 'group', 'status'].includes(type)) return res.status(400).json({ error: 'Invalid webhook type' });
+        const copy = Object.assign({}, existing);
+        delete copy[type];
+        await db.saveWebhooks(sessionId, copy);
+        res.json({ success: true, webhooks: copy });
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to delete webhooks', details: e.message });
+      }
+    });
     this.app.post('/sessions/:id/pair-request', this.handlePairRequest.bind(this));
     this.app.post('/sessions/:id/send-message', this.handleSendMessage.bind(this));
+    // forward messages to an arbitrary webhook immediately (body: { webhook, ids?: [id,...] })
+    this.app.post('/sessions/:id/forward', async (req, res) => {
+      const sessionId = req.params.id;
+      const { webhook, ids } = req.body || {};
+      if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+      if (!webhook) return res.status(400).json({ error: 'Webhook URL required in body' });
+      try {
+        const messages = ids && Array.isArray(ids) && ids.length ? await db.getMessagesByIds(ids, sessionId) : await db.getMessages(sessionId, { limit: 50 });
+        const results = [];
+        for (const m of messages) {
+          try {
+            const payload = this.buildWebhookPayload(m);
+            await this.postToWebhook(webhook, payload);
+            await db.updateMessageDelivery(m.id, { delivered: true, pending_webhook: null, last_delivery_error: null });
+            results.push({ id: m.id, status: 'delivered' });
+          } catch (e) {
+            await db.updateMessageDelivery(m.id, { delivered: false, pending_webhook: webhook, last_delivery_error: String(e.message || e) }).catch(() => null);
+            results.push({ id: m.id, status: 'pending', error: String(e.message || e) });
+          }
+        }
+        res.json({ results });
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to forward messages', details: e.message });
+      }
+    });
+
+    // list undelivered or pending messages
+    this.app.get('/sessions/:id/undelivered', async (req, res) => {
+      const sessionId = req.params.id;
+      if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+      try {
+        const rows = await db.getUndeliveredMessages(sessionId);
+        res.json({ count: rows.length, messages: rows });
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to list undelivered messages', details: e.message });
+      }
+    });
+
+    // retry forwarding specific messages (body: { ids?: [id,...], webhook?: url })
+    this.app.post('/sessions/:id/forward/retry', async (req, res) => {
+      const sessionId = req.params.id;
+      const { ids, webhook } = req.body || {};
+      if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+      try {
+        const messages = ids && Array.isArray(ids) && ids.length ? await db.getMessagesByIds(ids, sessionId) : await db.getUndeliveredMessages(sessionId, webhook);
+        const results = [];
+        for (const m of messages) {
+          const target = webhook || m.pendingWebhook || null;
+          if (!target) {
+            results.push({ id: m.id, status: 'skipped', reason: 'no webhook configured' });
+            continue;
+          }
+          try {
+            const payload = this.buildWebhookPayload(m);
+            await this.postToWebhook(target, payload);
+            await db.updateMessageDelivery(m.id, { delivered: true, pending_webhook: null, last_delivery_error: null });
+            results.push({ id: m.id, status: 'delivered' });
+          } catch (e) {
+            await db.updateMessageDelivery(m.id, { delivered: false, pending_webhook: target, last_delivery_error: String(e.message || e) }).catch(() => null);
+            results.push({ id: m.id, status: 'pending', error: String(e.message || e) });
+          }
+        }
+        res.json({ results });
+      } catch (e) {
+        res.status(500).json({ error: 'Failed to retry forwarding', details: e.message });
+      }
+    });
     this.app.get('/sessions/:id/status', this.getSessionStatus.bind(this));
     this.app.post('/sessions/:id/sync', this.syncSession.bind(this));
     this.app.delete('/sessions/:id', this.deleteSession.bind(this));
@@ -391,10 +534,12 @@ class SessionManager {
 
         console.log(`[${sessionId}] 📨 Message from ${from}: ${text}`);
 
-  // persist in-memory for quick access
+        // persist in-memory for quick access
+        let entry = null;
         try {
           const store = this.receivedMessages.get(sessionId) || [];
-          const entry = {
+          // populate entry (declared outside so webhook code below can access it)
+          entry = {
             id: message.key.id || `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
             from,
             isGroup,
@@ -410,13 +555,32 @@ class SessionManager {
           console.error('Failed to store incoming message in memory', e);
         }
 
-        // deliver webhook if configured
+        // persist to DB and deliver webhook if configured
         try {
+          // try to persist the message to DB (best-effort)
+          try {
+            await db.saveMessage(sessionId, entry).catch(() => null);
+          } catch (e) {
+            // ignore DB persistence errors
+          }
+
+          // read webhooks and post sanitized payload
           const webhooks = await db.loadWebhooks(sessionId).catch(() => null) || {};
-          const payload = { id: entry.id, from: entry.from, isGroup: entry.isGroup, timestamp: entry.timestamp, text: entry.text };
-          const target = entry.isGroup ? webhooks.group : webhooks.incoming;
-          if (target) {
-            this.postToWebhook(target, payload).catch(e => console.error('Webhook delivery failed', e));
+          // ensure entry exists (storage may have failed)
+          if (entry) {
+            const payload = this.buildWebhookPayload(entry);
+            const target = entry.isGroup ? webhooks.group : webhooks.incoming;
+            if (target) {
+              try {
+                await this.postToWebhook(target, payload);
+                // mark delivered in DB
+                await db.updateMessageDelivery(entry.id, { delivered: true, pending_webhook: null, last_delivery_error: null }).catch(() => null);
+              } catch (err) {
+                console.error('Webhook delivery failed', err);
+                // mark pending and save last error
+                await db.updateMessageDelivery(entry.id, { delivered: false, pending_webhook: target, last_delivery_error: String(err.message || err) }).catch(() => null);
+              }
+            }
           }
         } catch (e) {
           console.error('Failed to process webhook for incoming message', e);
@@ -611,6 +775,44 @@ class SessionManager {
       // swallow errors here; caller logs
       throw e;
     }
+  }
+
+  // Try to extract an international phone number (+123...) from a jid or raw message
+  formatSenderNumber(jid, raw) {
+    try {
+      // raw may contain participant for group messages
+      let candidate = null;
+      if (raw && raw.key && raw.key.participant) candidate = raw.key.participant;
+      if (!candidate && raw && raw.participant) candidate = raw.participant;
+      if (!candidate) candidate = jid;
+      if (!candidate) return null;
+      // candidate may be like '255683568254@s.whatsapp.net' or '255683568254:12@s.whatsapp.net'
+      const m = String(candidate).match(/(\d{6,15})/);
+      if (!m) return null;
+      return `+${m[1]}`;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Build a normalized payload for webhooks including both the raw JID and a formatted international number when possible
+  buildWebhookPayload(message) {
+    // message may be an 'entry' created in memory or a DB row
+    const fromJid = message.from || message.from_jid || null;
+    const formatted = this.formatSenderNumber(fromJid, message.raw || null) || null;
+    return {
+      id: message.id,
+      fromJid,
+      from: formatted,
+      isGroup: !!message.isGroup,
+      timestamp: message.timestamp || message.timestamp_ms || null,
+      text: message.text || null,
+      delivered: typeof message.delivered !== 'undefined' ? !!message.delivered : undefined,
+      deliveryAttempts: message.deliveryAttempts || message.delivery_attempts || 0,
+      lastDeliveryError: message.lastDeliveryError || message.last_delivery_error || null,
+      pendingWebhook: message.pendingWebhook || message.pending_webhook || null,
+      raw: message.raw || null
+    };
   }
 
   start(port = 3000) {
