@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://sirtheprogrammer:91JDib75NISrkKNZ4Aakhyyzz7aBPh77@dpg-d3ge05p5pdvs73ee0040-a.oregon-postgres.render.com/whatssession';
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://sirtheprogrammer:91JDib75NISrkKNZ4Aakhyyzz7aBPh77@dpg-d3ge05p5pdvs73ee0040-a.oregon-postgres.render.com/wtssession';
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
